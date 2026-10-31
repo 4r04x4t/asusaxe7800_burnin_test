@@ -11,7 +11,7 @@ Automated headless stress-testing tool designed for Raspberry Pi 4 (64-bit) to d
 
 ## Quick Start
 ```bash
-git clone [https://github.com/4r04x4t/asusaxe7800_burnin_test.git](https://github.com/4r04x4t/asusaxe7800_burnin_test.git)
+git clone https://github.com/4r04x4t/asusaxe7800_burnin_test.git](https://github.com/4r04x4t/asusaxe7800_burnin_test.git
 cd asus-burnin-tester
 chmod +x install.sh
 sudo ./install.sh
@@ -20,3 +20,4 @@ sudo systemctl start asus-stress.service
 
 Metrics
 Metrics are synced to /var/log/asus_stress/stress_metrics.csv after every cycle.
+```
