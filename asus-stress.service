@@ -1,0 +1,21 @@
+cat << 'EOF' > asus-stress.service
+[Unit]
+Description=ASUS RT-AXE7800 Burn-In Stress Test Service
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/log/asus_stress
+ExecStart=/usr/local/bin/asus_burnin.sh
+Restart=always
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
