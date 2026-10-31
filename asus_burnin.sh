@@ -8,10 +8,10 @@
 set -u
 
 # --- 1. BEÉPÍTETT ALAPÉRTELMEZÉSEK (FALLBACK) ---
-SSID_24="ASUS_TEST_2G"
+SSID_24="TestAsus_2G"
 PASS_24="TesztJelszo123"
 
-SSID_5G="ASUS_TEST_5G"
+SSID_5G="TestAsus_5G"
 PASS_5G="TesztJelszo123"
 
 ETH_IF="eth0"
@@ -20,7 +20,7 @@ WLAN_IF="wlan0"
 ASUS_GW="192.168.50.1"
 WAN_TARGET="1.1.1.1"
 
-OOKLA_SERVERS=("31717" "1697" "")
+OOKLA_SERVERS=("" "" "")
 
 RAM_DIR="/tmp/asus_stress_work"
 OUT_DIR="/var/log/asus_stress"
@@ -85,21 +85,17 @@ bootstrap_dependencies() {
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${pkgs[@]}"
     fi
 
-    # Hivatalos Ookla Speedtest CLI telepítése (ha még nincs fent)
     if ! command -v speedtest >/dev/null 2>&1; then
         log_event "Hivatalos Ookla Speedtest CLI repository hozzáadása és telepítése..."
         curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq speedtest
     fi
 
-    # Ookla licenc elfogadása
     speedtest --accept-license --accept-gdpr --version >/dev/null 2>&1 || true
 
-    # NetworkManager indítása
     systemctl enable --now NetworkManager >/dev/null 2>&1 || true
     rfkill unblock wifi || true
 
-    # CSV fejléc létrehozása
     if [[ ! -f "$CSV_FILE" ]]; then
         echo "Timestamp,Cycle,Interface,Band_SSID,Freq_MHz,RSSI_dBm,Link_Rate_Mbps,Tx_Retries,GW_Ping_Avg_ms,GW_Loss_Pct,WAN_Ping_Avg_ms,WAN_Loss_Pct,Engine,DL_Mbps,UL_Mbps,Loaded_Ping_Avg_ms,Loaded_Ping_Max_ms,Router_Status" > "$CSV_FILE"
         sync "$CSV_FILE"
@@ -114,9 +110,19 @@ bootstrap_dependencies() {
 switch_to_ethernet() {
     log_event "Váltás ETHERNET ($ETH_IF) interfészre..."
     nmcli device disconnect "$WLAN_IF" >/dev/null 2>&1 || true
-    ip link set "$WLAN_IF" down >/dev/null 2>&1 || true
 
     ip link set "$ETH_IF" up
+
+    local carrier_wait=6
+    while [[ $carrier_wait -gt 0 ]]; do
+        if [[ "$(cat "/sys/class/net/${ETH_IF}/carrier" 2>/dev/null)" == "1" ]]; then
+            break
+        fi
+        sleep 1
+        ((carrier_wait--))
+    done
+
+    nmcli device set "$ETH_IF" autoconnect yes >/dev/null 2>&1 || true
     nmcli device connect "$ETH_IF" >/dev/null 2>&1 || true
 
     wait_for_ip "$ETH_IF"
@@ -128,17 +134,14 @@ switch_to_wifi() {
     log_event "Váltás WI-FI ($WLAN_IF) -> SSID: $ssid..."
 
     nmcli device disconnect "$ETH_IF" >/dev/null 2>&1 || true
-    ip link set "$ETH_IF" down >/dev/null 2>&1 || true
 
     ip link set "$WLAN_IF" up
     nmcli radio wifi on
-    sleep 2
+    sleep 1
 
     nmcli connection delete "$ssid" >/dev/null 2>&1 || true
-    nmcli device wifi rescan ifname "$WLAN_IF" >/dev/null 2>&1 || true
-    sleep 3
 
-    if ! nmcli --wait 25 device wifi connect "$ssid" password "$pass" ifname "$WLAN_IF" >/dev/null 2>&1; then
+    if ! nmcli --wait 20 device wifi connect "$ssid" password "$pass" ifname "$WLAN_IF" >/dev/null 2>&1; then
         log_event "[KRITIKUS] Sikertelen Wi-Fi csatlakozás: $ssid"
         return 1
     fi
@@ -218,10 +221,14 @@ stop_bloat_ping() {
     fi
 
     local log_file="${RAM_DIR}/bloat_ping.txt"
-    local avg max
+    local avg="0" max="0"
     if [[ -f "$log_file" ]]; then
-        avg=$(awk -F'[/= ]+' '/min\/avg\/max/ {print $8}' "$log_file" | tail -n1)
-        max=$(awk -F'[/= ]+' '/min\/avg\/max/ {print $9}' "$log_file" | tail -n1)
+        local summary
+        summary=$(awk -F'=' '/min\/avg\/max/ {print $NF}' "$log_file" | tail -n1)
+        if [[ -n "$summary" ]]; then
+            avg=$(echo "$summary" | awk -F'/' '{print $2}' | tr -d ' ')
+            max=$(echo "$summary" | awk -F'/' '{print $3}' | tr -d ' ')
+        fi
     fi
     echo "${avg:-0},${max:-0}"
 }
@@ -261,24 +268,10 @@ run_cloudflare() {
 }
 
 run_rtr() {
-    local uuid="e8397843-764a-4f3c-9a59-55b339a21f42"
-    local settings_json
-    settings_json=$(curl -s --max-time 10 -H "Content-Type: application/json" \
-        -d "{\"type\":\"DESKTOP\",\"name\":\"RTR-Netztest\",\"language\":\"en\",\"uuid\":\"$uuid\"}" \
-        "https://control.netztest.at/RMBTControlServer/testRequest" 2>/dev/null || echo "{}")
-
-    local test_host
-    test_host=$(echo "$settings_json" | jq -r '.test_server_address // empty' 2>/dev/null)
-
     local dl_bps ul_bps dl_mbps ul_mbps
-    if [[ -n "$test_host" ]]; then
-        dl_bps=$(curl -s -k -w "%{speed_download}" -o /dev/null --max-time 20 "https://${test_host}/__down?bytes=25000000" 2>/dev/null || echo "0")
-    fi
 
-    if [[ -z "${dl_bps:-}" || "$dl_bps" == "0" || "$dl_bps" == "0.000" ]]; then
-        dl_bps=$(curl -s -w "%{speed_download}" -o /dev/null --max-time 25 "https://speed.hetzner.de/100MB.bin" || echo "0")
-        ul_bps=$(dd if=/dev/zero bs=1M count=10 2>/dev/null | curl -s -w "%{speed_upload}" -o /dev/null --max-time 25 --data-binary @- "https://speed.cloudflare.com/__up" || echo "0")
-    fi
+    dl_bps=$(curl -s -L -w "%{speed_download}" -o /dev/null --max-time 20 "https://fsn1-speed.hetzner.com/100MB.bin" || echo "0")
+    ul_bps=$(dd if=/dev/zero bs=1M count=10 2>/dev/null | curl -s -w "%{speed_upload}" -o /dev/null --max-time 20 --data-binary @- "https://speed.cloudflare.com/__up" || echo "0")
 
     dl_mbps=$(echo "scale=2; ($dl_bps * 8) / 1000000" | bc -l 2>/dev/null || echo "0")
     ul_mbps=$(echo "scale=2; ($ul_bps * 8) / 1000000" | bc -l 2>/dev/null || echo "0")
